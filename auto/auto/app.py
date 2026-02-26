@@ -9,6 +9,6 @@ app = Flask(__name__)
 app.register_blueprint(party_bp)
 app.register_blueprint(scrape_bp)
 app.register_blueprint(details_bp)
-
+print("test")
 if __name__ == "__main__":
     app.run(debug=True, port=5001)
