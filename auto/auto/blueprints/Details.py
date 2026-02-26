@@ -10,7 +10,6 @@ import torch
 import re
 import json
 from dateutil import parser
-import pandas as pd
 from openai import OpenAI
 import pathlib
 import numpy as np
@@ -21,12 +20,6 @@ details_bp = Blueprint('details_bp', __name__)
 APP_ROOT = pathlib.Path(__file__).parent.parent.resolve()
 print(f"Details Blueprint: APP_ROOT resolved to: {APP_ROOT}")
 
-BASE_DATA_FOLDER = str(APP_ROOT)
-UPLOAD_FOLDER = str(APP_ROOT / "uploads")
-IMG_ROOT = str(APP_ROOT / "pages")
-
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(IMG_ROOT, exist_ok=True)
 
 # ---------------- TrOCR Model ----------------
 processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
@@ -279,8 +272,6 @@ def extract_by_file_number():
     if not all_results:
         return jsonify({"message": "No valid PDFs found"}), 200
 
-    output_csv = os.path.join(UPLOAD_FOLDER, f"{file_number}_output.csv")
-    pd.DataFrame(all_results).to_csv(output_csv, index=False)
 
     return jsonify({
         "file_number": file_number,
