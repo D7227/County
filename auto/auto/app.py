@@ -1,4 +1,7 @@
 from flask import Flask
+from dotenv import load_dotenv
+load_dotenv()
+
 from blueprints.party_routes import party_bp
 from blueprints.scrape_routes import scrape_bp
 from blueprints.Details import details_bp

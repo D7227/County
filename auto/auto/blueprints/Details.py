@@ -270,8 +270,9 @@ def extract_by_file_number():
             "error": f"Folder for file number {file_number} not found",
             "message": f"Could not locate folder for {file_number} in project root or subfolders"
         }), 404
-    
+        
     all_results = []
+    processed_files = set()
     
     for root, dirs, files in os.walk(target_folder):
         for file in files:
@@ -281,6 +282,10 @@ def extract_by_file_number():
             
             if any(word in file.lower() for word in ["index", "lot", "block"]):
                 continue
+
+            if file in processed_files:
+                continue
+            processed_files.add(file)
             
             pdf_path = os.path.join(root, file)
             
@@ -297,7 +302,7 @@ def extract_by_file_number():
             "message": "No valid PDFs found in folder",
             "file_number": file_number
         }), 200
-    
+        
     return jsonify({
         "file_number": file_number,
         "total_files_processed": len(all_results),
