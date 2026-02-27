@@ -256,26 +256,6 @@ export default function DownloadsPage() {
                                             <Eye className="w-5 h-5 text-primary" />
                                         </Button>
                                         <Button
-                                            variant="secondary"
-                                            size="icon"
-                                            className="h-10 w-10 rounded-full shadow-lg bg-white hover:bg-white hover:scale-110 transition-transform"
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                // If it's a file, we use the parent folder as file number
-                                                const parts = currentPath.split("/");
-                                                const fileNumber = parts[parts.length - 1];
-                                                if (fileNumber) fetchDetailsMutation.mutate(fileNumber);
-                                            }}
-                                            title="Fetch Details for Folder"
-                                            disabled={isExtracting}
-                                        >
-                                            {isExtracting ? (
-                                                <Loader2 className="w-5 h-5 animate-spin" />
-                                            ) : (
-                                                <Info className="w-5 h-5 text-indigo-600" />
-                                            )}
-                                        </Button>
-                                        <Button
                                             variant="default"
                                             size="icon"
                                             className="h-10 w-10 rounded-full shadow-lg hover:scale-110 transition-transform"
