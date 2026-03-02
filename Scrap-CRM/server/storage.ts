@@ -21,7 +21,7 @@ import session from "express-session";
 import createMemoryStore from "memorystore";
 
 const MemoryStore = createMemoryStore(session);
-import { eq, desc, gte } from "drizzle-orm";
+import { eq, desc, gte, inArray } from "drizzle-orm";
 
 export interface IStorage {
   // Uploads
@@ -34,6 +34,15 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+  updateUser(id: number, data: Partial<InsertUser & { isAdmin: number; plan: string; credits: number }>): Promise<User | undefined>;
+  deleteUser(id: number): Promise<boolean>;
+  getUsersWithStats(): Promise<any[]>;
+  // Billing
+  deductCredit(userId: number): Promise<{ success: boolean; remaining: number }>;
+  deductCredits(userId: number, amount: number): Promise<{ success: boolean; remaining: number }>;
+  addCredits(userId: number, amount: number): Promise<User | undefined>;
+  incrementScrapeCount(userId: number): Promise<void>;
+  setPlan(userId: number, plan: string): Promise<User | undefined>;
 
   sessionStore: session.Store;
 
@@ -55,6 +64,9 @@ export interface IStorage {
   // Extracted Details
   createExtractedDetail(detail: InsertExtractedDetail): Promise<ExtractedDetail>;
   getExtractedDetails(fileNumber: string): Promise<ExtractedDetail[]>;
+
+  // User Scope
+  getAllowedFileNumbers(userId: number): Promise<string[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -84,6 +96,91 @@ export class DatabaseStorage implements IStorage {
     const insertId = Number(result[0].insertId);
     const [newUser] = await db.select().from(users).where(eq(users.id, insertId));
     return newUser;
+  }
+
+  async updateUser(id: number, updateData: Partial<InsertUser & { isAdmin: number; plan: string; credits: number }>): Promise<User | undefined> {
+    await db.update(users).set(updateData as any).where(eq(users.id, id));
+    const [updatedUser] = await db.select().from(users).where(eq(users.id, id));
+    return updatedUser;
+  }
+
+  async deleteUser(id: number): Promise<boolean> {
+    await db.update(uploads).set({ userId: null }).where(eq(uploads.userId, id));
+    const result = await db.delete(users).where(eq(users.id, id));
+    return result[0].affectedRows > 0;
+  }
+
+  async deductCredit(userId: number): Promise<{ success: boolean; remaining: number }> {
+    return this.deductCredits(userId, 1);
+  }
+
+  async deductCredits(userId: number, amount: number): Promise<{ success: boolean; remaining: number }> {
+    const [u] = await db.select().from(users).where(eq(users.id, userId));
+    if (!u) return { success: false, remaining: 0 };
+    if (u.credits < amount) return { success: false, remaining: 0 };
+    const newCredits = u.credits - amount;
+    await db.update(users).set({ credits: newCredits, totalScrapes: u.totalScrapes + amount }).where(eq(users.id, userId));
+    return { success: true, remaining: newCredits };
+  }
+
+  async addCredits(userId: number, amount: number): Promise<User | undefined> {
+    const [u] = await db.select().from(users).where(eq(users.id, userId));
+    if (!u) return undefined;
+    await db.update(users).set({ credits: u.credits + amount }).where(eq(users.id, userId));
+    const [updated] = await db.select().from(users).where(eq(users.id, userId));
+    return updated;
+  }
+
+  async incrementScrapeCount(userId: number): Promise<void> {
+    const [u] = await db.select().from(users).where(eq(users.id, userId));
+    if (!u) return;
+    await db.update(users).set({ totalScrapes: u.totalScrapes + 1 }).where(eq(users.id, userId));
+  }
+
+  async setPlan(userId: number, plan: string): Promise<User | undefined> {
+    await db.update(users).set({ plan }).where(eq(users.id, userId));
+    const [updated] = await db.select().from(users).where(eq(users.id, userId));
+    return updated;
+  }
+
+  async getUsersWithStats(): Promise<any[]> {
+    // We can use a raw SQL query or drizzle query builder to get all users and their counts
+    // For simplicity, let's fetch users, then uploads and scrape items, and map them in memory since there won't be millions of users right now.
+    // Or just a simple nested map. Wait, let's just use raw drizzle queries or memory mapping.
+
+    // Fetch all users
+    const allUsers = await db.select().from(users);
+
+    // Fetch all uploads
+    const allUploads = await db.select().from(uploads);
+
+    // Fetch all scrape items
+    const allScrapeItems = await db.select().from(scrapeItems);
+
+    const result = allUsers.map(u => {
+      // Find uploads by this user
+      const userUploads = allUploads.filter(up => up.userId === u.id);
+      const userUploadIds = userUploads.map(up => up.id);
+
+      // Find scrape items belonging to these uploads
+      const userScrapeItems = allScrapeItems.filter(si => si.uploadId && userUploadIds.includes(si.uploadId));
+
+      return {
+        id: u.id,
+        username: u.username,
+        isAdmin: u.isAdmin,
+        plan: u.plan,
+        credits: u.credits,
+        totalScrapes: u.totalScrapes,
+        totalUploads: userUploads.length,
+        totalScrapeRecords: userScrapeItems.length,
+        // Billing: estimated spend
+        estimatedBill: u.plan === "payg" ? u.totalScrapes * 1 : 0, // $1 per scrape for payg
+        creditsValueUsd: u.plan === "credits" ? (u.credits / 1000) * 1000 : 0, // $1000 per 1000 credits
+      };
+    });
+
+    return result;
   }
 
   async getUploads(): Promise<Upload[]> {
@@ -229,6 +326,22 @@ export class DatabaseStorage implements IStorage {
 
   async getExtractedDetails(fileNumber: string): Promise<ExtractedDetail[]> {
     return await db.select().from(extractedDetails).where(eq(extractedDetails.fileNumber, fileNumber)).orderBy(desc(extractedDetails.createdAt));
+  }
+
+  async getAllowedFileNumbers(userId: number): Promise<string[]> {
+    const userUploads = await db.select().from(uploads).where(eq(uploads.userId, userId));
+    const uploadIds = userUploads.map(u => u.id);
+    if (uploadIds.length === 0) return [];
+
+    const userItems = await db.select().from(scrapeItems).where(inArray(scrapeItems.uploadId, uploadIds));
+    const fileNumbers = new Set<string>();
+    for (const item of userItems) {
+      const data = typeof item.data === 'string' ? JSON.parse(item.data) : item.data;
+      if (data && data["File Number"]) {
+        fileNumbers.add(String(data["File Number"]).trim());
+      }
+    }
+    return Array.from(fileNumbers);
   }
 }
 

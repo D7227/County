@@ -6,11 +6,16 @@ export const users = mysqlTable("users", {
   id: int("id").primaryKey().autoincrement(),
   username: text("username").notNull(),
   password: text("password").notNull(),
+  isAdmin: int("is_admin").notNull().default(0),
+  plan: text("plan").notNull().default("payg"),     // "payg" | "credits"
+  credits: int("credits").notNull().default(0),      // remaining credits (credits plan)
+  totalScrapes: int("total_scrapes").notNull().default(0), // total scrapes run (payg billing)
 });
 
 export const uploads = mysqlTable("uploads", {
   id: int("id").primaryKey().autoincrement(),
   filename: text("filename").notNull(),
+  userId: int("user_id").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

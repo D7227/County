@@ -39,6 +39,7 @@ export async function registerRoutes(
       // Create upload record
       const newUpload = await storage.createUpload({
         filename: req.file.originalname,
+        userId: req.user?.id || null, // Attach user ID if logged in
       });
 
       // Parse Excel
@@ -117,6 +118,18 @@ export async function registerRoutes(
         };
       });
 
+      // ── Billing Check for per_row_credits ──
+      if (req.user) {
+        const u = await storage.getUser(req.user.id);
+        if (u && u.plan === "per_row_credits") {
+          const requiredCredits = itemsToInsert.length;
+          if (u.credits < requiredCredits) {
+            return res.status(402).json({ message: `Insufficient credits. You need ${requiredCredits} credits to upload ${requiredCredits} rows.` });
+          }
+          await storage.deductCredits(u.id, requiredCredits);
+        }
+      }
+
       await storage.createScrapeItems(itemsToInsert);
 
       res.status(201).json({
@@ -134,15 +147,144 @@ export async function registerRoutes(
 
   // List Uploads
   app.get(api.uploads.list.path, async (req, res) => {
-    const uploads = await storage.getUploads();
-    res.json(uploads);
+    let allUploads = await storage.getUploads();
+
+    // Only show user's own uploads (even for admins in the regular UI)
+    if (req.user) {
+      allUploads = allUploads.filter(u => u.userId === req.user?.id);
+    }
+
+    res.json(allUploads);
+  });
+
+  // Admin Route: Get Users with Stats
+  app.get("/api/admin/users", async (req, res) => {
+    if (!req.user || req.user.isAdmin !== 1) {
+      return res.status(403).json({ message: "Forbidden: Admin access only" });
+    }
+    try {
+      const usersStats = await storage.getUsersWithStats();
+      res.json(usersStats);
+    } catch (err: any) {
+      console.error("Error fetching user stats:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Admin Route: Update User
+  app.patch("/api/admin/users/:id", async (req, res) => {
+    if (!req.user || req.user.isAdmin !== 1) {
+      return res.status(403).json({ message: "Forbidden: Admin access only" });
+    }
+    try {
+      const id = parseInt(req.params.id);
+      const updateData = req.body;
+      const updatedUser = await storage.updateUser(id, updateData);
+      if (!updatedUser) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      res.json(updatedUser);
+    } catch (err: any) {
+      console.error("Error updating user:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Admin Route: Delete User
+  app.delete("/api/admin/users/:id", async (req, res) => {
+    if (!req.user || req.user.isAdmin !== 1) {
+      return res.status(403).json({ message: "Forbidden: Admin access only" });
+    }
+    try {
+      const id = parseInt(req.params.id);
+
+      // Prevent deleting yourself
+      if (req.user.id === id) {
+        return res.status(400).json({ message: "Cannot delete your own admin account" });
+      }
+
+      const deleted = await storage.deleteUser(id);
+      if (!deleted) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      res.json({ message: "User deleted successfully" });
+    } catch (err: any) {
+      console.error("Error deleting user:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Admin Route: Add Credits to User
+  app.post("/api/admin/users/:id/add-credits", async (req, res) => {
+    if (!req.user || req.user.isAdmin !== 1) {
+      return res.status(403).json({ message: "Forbidden: Admin access only" });
+    }
+    try {
+      const id = parseInt(req.params.id);
+      const amount = parseInt(req.body.amount);
+      if (isNaN(amount) || amount <= 0) {
+        return res.status(400).json({ message: "Invalid credit amount" });
+      }
+      const updatedUser = await storage.addCredits(id, amount);
+      if (!updatedUser) return res.status(404).json({ message: "User not found" });
+      res.json({ message: `Added ${amount} credits`, user: updatedUser });
+    } catch (err: any) {
+      console.error("Error adding credits:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Admin Route: Set User Plan
+  app.patch("/api/admin/users/:id/plan", async (req, res) => {
+    if (!req.user || req.user.isAdmin !== 1) {
+      return res.status(403).json({ message: "Forbidden: Admin access only" });
+    }
+    try {
+      const id = parseInt(req.params.id);
+      const { plan } = req.body;
+      if (!plan || !['payg', 'credits', 'per_row_credits'].includes(plan)) {
+        return res.status(400).json({ message: "Plan must be 'payg', 'credits', or 'per_row_credits'" });
+      }
+      const updatedUser = await storage.setPlan(id, plan);
+      if (!updatedUser) return res.status(404).json({ message: "User not found" });
+      res.json(updatedUser);
+    } catch (err: any) {
+      console.error("Error setting plan:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
   });
 
   // List Items
   app.get(api.scrapeItems.list.path, async (req, res) => {
     const uploadId = req.query.uploadId ? parseInt(req.query.uploadId as string) : undefined;
     const status = req.query.status as string;
-    const items = await storage.getScrapeItems(uploadId, status);
+
+    // If a specific uploadId is requested, verify the user owns it
+    if (uploadId && req.user) {
+      const allUploads = await storage.getUploads();
+      const userUploadIds = allUploads
+        .filter(u => u.userId === req.user!.id)
+        .map(u => u.id);
+
+      // If this uploadId doesn't belong to the user, return empty
+      if (!userUploadIds.includes(uploadId)) {
+        return res.json([]);
+      }
+    }
+
+    let items = await storage.getScrapeItems(uploadId, status);
+
+    // Filter to only their uploads
+    if (!uploadId && req.user) {
+      const allUploads = await storage.getUploads();
+      const userUploadIds = new Set(
+        allUploads
+          .filter(u => u.userId === req.user!.id)
+          .map(u => u.id)
+      );
+      items = items.filter(item => item.uploadId && userUploadIds.has(item.uploadId));
+    }
+
     res.json(items);
   });
 
@@ -203,6 +345,22 @@ export async function registerRoutes(
 
       if (!item) {
         return res.status(404).json({ message: "Item not found" });
+      }
+
+      // ── Billing Check ──
+      if (req.user) {
+        const u = await storage.getUser(req.user.id);
+        if (u) {
+          if (u.plan === "credits") {
+            const result = await storage.deductCredit(u.id);
+            if (!result.success) {
+              return res.status(402).json({ message: "Insufficient credits. Please top up your account.", credits: 0 });
+            }
+          } else if (u.plan === "payg") {
+            await storage.incrementScrapeCount(u.id);
+          }
+          // per_row_credits pays on upload, so no action required here
+        }
       }
 
       // Construct Payload
@@ -317,6 +475,22 @@ export async function registerRoutes(
       const item = await storage.getScrapeItem(id);
       if (!item) return res.status(404).json({ message: "Item not found" });
 
+      // ── Billing Check ──
+      if (req.user) {
+        const u = await storage.getUser(req.user.id);
+        if (u) {
+          if (u.plan === "credits") {
+            const result = await storage.deductCredit(u.id);
+            if (!result.success) {
+              return res.status(402).json({ message: "Insufficient credits. Please top up your account.", credits: 0 });
+            }
+          } else if (u.plan === "payg") {
+            await storage.incrementScrapeCount(u.id);
+          }
+          // per_row_credits pays on upload, so no action required here
+        }
+      }
+
       const data = item.data as any;
       const township = (data["Township"] || data["Townsnhip"] || data["township"] || "").toUpperCase();
       const county = (data["County"] || "").toUpperCase();
@@ -380,6 +554,22 @@ export async function registerRoutes(
       if (!id) return res.status(400).json({ message: "ID is required" });
       const item = await storage.getScrapeItem(id);
       if (!item) return res.status(404).json({ message: "Item not found" });
+
+      // ── Billing Check ──
+      if (req.user) {
+        const u = await storage.getUser(req.user.id);
+        if (u) {
+          if (u.plan === "credits") {
+            const result = await storage.deductCredit(u.id);
+            if (!result.success) {
+              return res.status(402).json({ message: "Insufficient credits. Please top up your account.", credits: 0 });
+            }
+          } else if (u.plan === "payg") {
+            await storage.incrementScrapeCount(u.id);
+          }
+          // per_row_credits pays on upload, so no action required here
+        }
+      }
 
       const data = item.data as any;
       const county = (data["County"] || "").toUpperCase();
@@ -463,6 +653,19 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Invalid path" });
       }
 
+      let allowedFileNumbers: string[] | null = null;
+      if (req.user) {
+        allowedFileNumbers = await storage.getAllowedFileNumbers(req.user.id);
+      }
+
+      const parts = relPath.replace(/\\/g, "/").split("/").filter(Boolean);
+      if (parts.length >= 2 && allowedFileNumbers) {
+        const fileNumberDir = parts[1];
+        if (!allowedFileNumbers.some(fn => fileNumberDir.startsWith(fn))) {
+          return res.status(403).json({ message: "Forbidden: You don't have access to this file number." });
+        }
+      }
+
       const baseDir = path.join(process.cwd(), "../auto/auto");
       const targetPath = path.join(baseDir, relPath);
 
@@ -486,6 +689,12 @@ export async function registerRoutes(
             if (blocked.includes(dirent.name)) return false;
             return true;
           }
+          // If we are at county level (parts.length === 1), filter file numbers
+          if (parts.length === 1 && allowedFileNumbers) {
+            if (!allowedFileNumbers.some(fn => dirent.name.startsWith(fn))) {
+              return false;
+            }
+          }
           return true;
         })
         .map(dirent => ({
@@ -506,6 +715,17 @@ export async function registerRoutes(
       const relPath = (req.query.path as string);
       if (!relPath || relPath.includes("..")) {
         return res.status(400).json({ message: "Invalid path" });
+      }
+
+      if (req.user) {
+        const allowedFileNumbers = await storage.getAllowedFileNumbers(req.user.id);
+        const parts = relPath.replace(/\\/g, "/").split("/").filter(Boolean);
+        if (parts.length >= 2) {
+          const fileNumberDir = parts[1];
+          if (!allowedFileNumbers.some(fn => fileNumberDir.startsWith(fn))) {
+            return res.status(403).json({ message: "Forbidden: You don't have access to this file." });
+          }
+        }
       }
 
       const baseDir = path.join(process.cwd(), "../auto/auto");
@@ -564,6 +784,13 @@ export async function registerRoutes(
     const { fileNumber } = req.body;
     try {
       if (!fileNumber) return res.status(400).json({ message: "fileNumber is required" });
+
+      if (req.user) {
+        const allowedFileNumbers = await storage.getAllowedFileNumbers(req.user.id);
+        if (!allowedFileNumbers.includes(fileNumber)) {
+          return res.status(403).json({ message: "Forbidden: You don't have access to this file number." });
+        }
+      }
 
       console.log(`Triggering PDF extraction for file number: ${fileNumber}`);
 

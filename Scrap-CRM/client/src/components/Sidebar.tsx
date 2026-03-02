@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Upload, Layers, Activity, LogOut, Download, Users } from "lucide-react";
+import { LayoutDashboard, Upload, Layers, Activity, LogOut, Download, Users, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -62,14 +62,24 @@ export function Sidebar() {
               <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">User Account</p>
             </div>
           </div>
-          <button
-            onClick={() => logoutMutation.mutate()}
-            disabled={logoutMutation.isPending}
-            className="w-full mt-4 flex items-center justify-center gap-2 text-xs font-bold text-muted-foreground hover:text-destructive py-2.5 rounded-xl bg-white/40 hover:bg-white/60 transition-all border border-white/10"
-          >
-            <LogOut className="w-4 h-4" />
-            {logoutMutation.isPending ? "Logging out..." : "Sign Out"}
-          </button>
+          <div className="mt-4 space-y-2">
+            {user?.isAdmin === 1 && (
+              <Link href="/admin">
+                <a className="w-full flex items-center justify-center gap-2 text-xs font-bold text-primary hover:text-primary-foreground py-2.5 rounded-xl bg-primary/10 hover:bg-primary transition-all border border-primary/20">
+                  <ShieldAlert className="w-4 h-4" />
+                  Admin Panel
+                </a>
+              </Link>
+            )}
+            <button
+              onClick={() => logoutMutation.mutate()}
+              disabled={logoutMutation.isPending}
+              className="w-full flex items-center justify-center gap-2 text-xs font-bold text-muted-foreground hover:text-destructive py-2.5 rounded-xl bg-white/40 hover:bg-white/60 transition-all border border-white/10"
+            >
+              <LogOut className="w-4 h-4" />
+              {logoutMutation.isPending ? "Logging out..." : "Sign Out"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
