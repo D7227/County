@@ -20,6 +20,8 @@ def search_document():
         site_url = payload.get("site_url")
         folder_name = payload.get("folder_name")
         county = payload.get("county")
+        count_limit = payload.get("count")
+
 
         if not party_name or not from_date_raw or not file_number:
             return jsonify({
@@ -59,14 +61,26 @@ def search_document():
             driver.quit()
             driver = None
 
-        return jsonify({
+        response_data = {
             "status": status,
             "party_name": party_name,
             "file_number": file_number,
             "from_date": from_date,
             "to_date": to_date,
             "total_downloaded": file_count,
-        })
+        }
+
+        if count_limit is not None:
+            try:
+                count_limit_int = int(count_limit)
+                if file_count >= count_limit_int:
+                    response_data["result"] = "common"
+                else:
+                    response_data["result"] = "uncommon"
+            except (ValueError, TypeError):
+                pass
+
+        return jsonify(response_data)
 
     except Exception as e:
         return jsonify({"status": "ERROR", "message": str(e)}), 500
